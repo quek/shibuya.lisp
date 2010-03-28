@@ -134,6 +134,20 @@
          (append (flatten (car lis)) (flatten (cdr lis))))
         (t (append (list (car lis)) (flatten (cdr lis))))))
 
+;; 点対リストにも対応したflatten
+(DEFUN-COMPILE-TIME FLATTEN-SAFE (TREE)
+  (COND ((ATOM TREE) TREE)
+        ((NOT (LISTP (CDR TREE)))
+         (FLATTEN-SAFE (LIST (CAR TREE) (CDR TREE))))
+        ((LISTP (CAR TREE))
+         (APPEND (FLATTEN-SAFE (CAR TREE))
+                 (FLATTEN-SAFE (CDR TREE))))
+        ('T (CONS (CAR TREE)
+                  (FLATTEN-SAFE (CDR TREE))))))
+
+;(FLATTEN-SAFE '((((((((((()))(1 . 2) . 3) . 4)))))()) . 5))
+;⇒ (1 2 3 4 5)
+
 ;; キーワードなのに関数
 ;; http://cadr.g.hatena.ne.jp/g000001/20090929/1254234012
 (DEFMACRO WITH-KEYWORD-FUNCTION (&BODY BODY)
@@ -792,9 +806,10 @@
   (let ((g (gensym)))
     `(LAMBDA (&rest ,g)
        (DESTRUCTURING-BIND ,args ,g
-         (DECLARE (IGNORABLE ,@(flatten args)))
+         (DECLARE (IGNORABLE ,@(flatten-safe args)))
          ,@body))))
-
+(MAPCAR (FN ((A . B)) (LIST A B))
+        '((1 2)))
 (defmacro MULTIPLE-VALUE-PSETQ (&rest pairs)
   (cond ((cddr pairs) `(SETF (VALUES ,@(car pairs))
                              (MULTIPLE-VALUE-PROG1 ,(cadr pairs)
@@ -1092,7 +1107,7 @@ form1 form2 ... を var を使って順に実行する。 var は list の各要
 <例>
         (for i (index 60 80) (prins i)) -> <=>?@ABCDEFGHIJKLMNOP
         				  nil"
-  (IF (EQL 'INDEX (CAR LIST))           ;(index)関数の呼び出しはせずマクロに展開
+  (IF (EQL 'INDEX (CAR-SAFE LIST))       ;(index)関数の呼び出しはせずマクロに展開
       (LET ((START (GENSYM))
             (END (GENSYM))
             (INCREMENT (GENSYM)))
@@ -1135,4 +1150,85 @@ form1 form2 ... を var を使って順に実行する。 var は list の各要
 ;18 
 ;19 
 ;20 
+
+;; Unixコマンドのtr
+;; http://ja.doukaku.org/comment/5639/
+(defun tr (from to string)
+  (map 'string (lambda (c)
+                 (or (some (lambda (x y) (and (char= x c) y)) from to)
+                     c))
+       string))
+
+;; from Let over lambda
+(defmacro# nlet (n letargs &body body)
+  (let ((gs (loop for i in letargs
+                  collect (gensym))))
+    `(macrolet
+       ((,n ,gs
+          `(progn
+             (psetq
+               ,@(apply #'nconc
+                        (mapcar
+                          #'list
+                          ',(mapcar #'car letargs)
+                          (list ,@gs))))
+             (go ,',#:n))))
+       (block ,#:b
+         (let ,letargs
+           (tagbody
+              ,#:n (return-from
+                   ,#:b (progn ,@body))))))))
+
+(defun-compile-time des- (bind sym)
+  (let (vars)
+    (values 
+     (labels ((frob (bind sym)
+		(cond ((null bind) nil)	
+                      
+		      ((atom bind)
+		       `((setq  ,bind ,sym)))
+                      
+		      ((null (car bind))
+		       `((setq ,sym (cdr ,sym))
+			 ,@(frob (cdr bind) sym)))
+                      
+		      ((and (atom (car bind)) (null (cdr bind)))
+		       `((setq ,(car bind) (car ,sym)))) ;last -1
+
+		      ((atom (car bind))
+		       `((setq ,(car bind) (car ,sym))
+			 (setq ,sym (cdr ,sym))
+			 ,@(frob (cdr bind) sym)))
+
+		      ('T (let ((carcons (gensym)))
+			    (push carcons vars)
+			    `((setq ,carcons (car ,sym))
+			      ,@(frob (car bind) carcons)
+			      (setq ,sym (cdr ,sym))
+			      ,@(frob (cdr bind) sym)))))))
+       (frob bind sym))
+     vars)))
+
+(defmacro desetq (&rest bind-specs)
+  (unless (evenp (length bind-specs))
+    (error "Too many arguments in form ~S." bind-specs))
+  (do ((l bind-specs (cddr l)) 
+       body vars)
+      ((endp l) `((lambda ,vars ,@body) ,@(mapcar (constantly () ) vars)))
+    (let ((var (car l)) (val (cadr l)))
+      (if (consp var)
+	  (let ((tem (gensym)))
+	    (multiple-value-bind (varlist vallist) (des- var tem)
+	      (setq vars `(,@vallist ,@vars ,tem))
+	      (setq body `(,@body (setq ,tem ,val) ,@varlist))))
+	  (setq body `(,@body (setq ,var ,val)))))))
+
+#|
+ (LET (A B C D E F)
+  (DESETQ (((a) b c) d e f)  '(((1) 2 3) 4 5 6))
+  (LIST A B C D E F))
+;⇒ (1 2 3 4 5 6)
+|#
+
+
 
